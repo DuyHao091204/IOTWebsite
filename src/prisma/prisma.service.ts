@@ -1,6 +1,5 @@
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
-import { RFIDEvent } from '../../generated/prisma/index';
 
 @Injectable()
 export class PrismaService
