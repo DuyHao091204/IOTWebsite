@@ -1,0 +1,191 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RfidStatus {
+  IN_STOCK
+  SOLD
+  LOST
+  INACTIVE
+}
+
+enum ReceiptStatus {
+  DRAFT
+  PAID
+  CANCELED
+}
+
+// ─────────────────────────────
+// 👤 Người dùng hệ thống
+// ─────────────────────────────
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique
+  email     String   @unique
+  password  String
+  role      String   @default("staff")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  receipts  Receipt[]
+  poCreated PurchaseOrder[] @relation("PO_CreatedBy")
+}
+
+// ─────────────────────────────
+// 🏭 Nhà cung cấp
+// ─────────────────────────────
+model Supplier {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  createdAt DateTime @default(now())
+  
+
+  purchaseOrders PurchaseOrder[]
+}
+
+// ─────────────────────────────
+// 📦 Sản phẩm trong kho
+// ─────────────────────────────
+model Product {
+  id        Int      @id @default(autoincrement())
+  sku       String   @unique                    // Mã sản phẩm (dùng để so sánh khi nhập hàng)
+  name      String
+  sellPrice Decimal  @db.Decimal(12, 2)         // Giá bán hiện hành
+  stock     Int      @default(0)                // Số lượng tồn kho
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  rfids        Rfid[]
+  receiptItems ReceiptItem[]
+  poItems      PurchaseOrderItem[]
+}
+
+// ─────────────────────────────
+// 🧾 Thông tin đơn nhập hàng
+// ─────────────────────────────
+model PurchaseOrder {
+  id          Int      @id @default(autoincrement())
+  supplierId  Int
+  createdById Int
+  status      String   @default("draft") // draft -> pending -> received
+  totalCost   Decimal  @default(0) @db.Decimal(14, 2)
+  note        String?
+  createdAt   DateTime @default(now())
+  
+
+  supplier  Supplier @relation(fields: [supplierId], references: [id])
+  createdBy User     @relation("PO_CreatedBy", fields: [createdById], references: [id])
+  items     PurchaseOrderItem[]
+}
+
+// ─────────────────────────────
+// 📦 Dòng sản phẩm trong đơn nhập
+// ─────────────────────────────
+model PurchaseOrderItem {
+  id        Int      @id @default(autoincrement())
+  poId      Int
+  productId Int?                                       // Có thể null (sản phẩm mới chưa có trong Product)
+  name      String                                    // Tên hàng nhập
+  sku       String                                    // Mã SKU hàng nhập
+  qty       Int                                       // Số lượng nhập
+  unitCost  Decimal  @db.Decimal(12, 2)               // Giá nhập / 1 sản phẩm
+  sellPrice Decimal  @db.Decimal(12, 2)               // Giá bán đề xuất
+  lineTotal Decimal  @db.Decimal(14, 2)               // Tổng giá dòng = qty * unitCost
+  updatedAt DateTime @updatedAt
+
+
+  po      PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  product Product?      @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  rfids Rfid[] @relation("POItemRfids")
+
+  @@index([poId])
+  @@index([productId])
+  @@index([sku])
+}
+
+// ─────────────────────────────
+// 🧾 Hoá đơn bán hàng
+// ─────────────────────────────
+model Receipt {
+  id         Int           @id @default(autoincrement())
+  userId     Int
+  totalQty   Int           @default(0)
+  subtotal   Decimal       @default(0) @db.Decimal(12, 2)
+  discount   Decimal       @default(0) @db.Decimal(12, 2)
+  totalPrice Decimal       @default(0) @db.Decimal(12, 2)
+  status     ReceiptStatus @default(DRAFT)
+  createdAt  DateTime      @default(now())
+  
+
+  user  User          @relation(fields: [userId], references: [id])
+  items ReceiptItem[]
+}
+
+// ─────────────────────────────
+// 🧾 Dòng hàng trong hoá đơn bán
+// ─────────────────────────────
+model ReceiptItem {
+  id        Int      @id @default(autoincrement())
+  receiptId Int
+  productId Int
+  qty       Int      @default(1)
+  unitPrice Decimal  @db.Decimal(12, 2)
+  lineTotal Decimal  @default(0) @db.Decimal(12, 2)
+  createdAt DateTime @default(now())
+  
+
+  receipt Receipt @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  rfids Rfid[] @relation("ReceiptItemRfids")
+}
+
+// ─────────────────────────────
+// 🔖 Thông tin thẻ RFID
+// ─────────────────────────────
+model Rfid {
+  uid        String     @id
+  productId  Int
+  status     RfidStatus @default(IN_STOCK)
+  lastSeenAt DateTime?
+
+  receiptItemId Int?
+  poItemId      Int?
+
+  product     Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  receiptItem ReceiptItem?      @relation("ReceiptItemRfids", fields: [receiptItemId], references: [id], onDelete: SetNull)
+  poItem      PurchaseOrderItem?@relation("POItemRfids", fields: [poItemId], references: [id], onDelete: SetNull)
+
+  events RfidEvent[] @relation("RfidToEvents")
+
+  @@index([productId])
+  @@index([status])
+  @@index([receiptItemId])
+  @@index([poItemId])
+}
+
+// ─────────────────────────────
+// 🧭 Nhật ký sự kiện quét RFID
+// ─────────────────────────────
+model RfidEvent {
+  id        Int      @id @default(autoincrement())
+  rfidUid   String
+  action    String
+  timestamp DateTime @default(now())
+
+  rfid Rfid @relation("RfidToEvents", fields: [rfidUid], references: [uid], onDelete: Cascade)
+
+  @@index([rfidUid])
+  @@index([action])
+  @@index([timestamp])
+}
